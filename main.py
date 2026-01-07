@@ -9,7 +9,7 @@ from datetime import datetime
 # 1. 설정 (Configuration)
 # ==========================================
 
-# A. 암호화폐 (메이저 + AI/L1 + 밈코인)
+# A. 암호화폐
 CRYPTO_SYMBOLS = [
     'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT', 'SOL/USDT',
     'DOGE/USDT', 'SHIB/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT',
@@ -17,7 +17,7 @@ CRYPTO_SYMBOLS = [
     'NEAR/USDT', 'APT/USDT', 'SUI/USDT', 'WLD/USDT', 'PEPE/USDT'
 ]
 
-# B. 주식 (빅테크 + 반도체 + 고변동성 + 인기주 + ETF)
+# B. 주식
 STOCK_SYMBOLS = [
     'TSLA', 'AAPL', 'NVDA', 'MSFT', 'AMZN', 'GOOGL', 'META', 'NFLX',
     'AMD', 'INTC', 'ARM', 'AVGO', 'MU', 'TSM', 'SMCI',
@@ -29,8 +29,8 @@ STOCK_SYMBOLS = [
 # 게임 룰 설정
 PAST_CANDLES = 65
 FUTURE_CANDLES = 10
-TOTAL_WINDOW = PAST_CANDLES + FUTURE_CANDLES  # 75개
-STEP_SIZE = 3  # 3개 캔들마다 생성
+TOTAL_WINDOW = PAST_CANDLES + FUTURE_CANDLES
+STEP_SIZE = 3
 
 # 난이도별 변동성 기준값
 VOLATILITY_SETTINGS = {
@@ -68,12 +68,12 @@ def smart_round_indicator(price):
         return round(price, 10)
 
 
-# ✅ EMA(지수이동평균) 계산
+# 1. EMA
 def calculate_ema(df, window):
     return df['close'].ewm(span=window, adjust=False).mean()
 
 
-# ✅ RSI(상대강도지수) 계산 (기간 14)
+# 2. RSI
 def calculate_rsi(df, window=14):
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).ewm(com=window - 1, adjust=False).mean()
@@ -83,13 +83,31 @@ def calculate_rsi(df, window=14):
     return rsi
 
 
-# ✅ [신규] 볼린저 밴드 계산 (20일, 표준편차 2)
+# 3. Bollinger Bands
 def calculate_bollinger_bands(df, window=20, num_std=2):
     sma = df['close'].rolling(window=window).mean()
     std = df['close'].rolling(window=window).std()
     upper_band = sma + (std * num_std)
     lower_band = sma - (std * num_std)
     return upper_band, lower_band
+
+
+# 4. MACD (12, 26, 9)
+def calculate_macd(df, fast=12, slow=26, signal=9):
+    exp1 = df['close'].ewm(span=fast, adjust=False).mean()
+    exp2 = df['close'].ewm(span=slow, adjust=False).mean()
+    macd = exp1 - exp2
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    histogram = macd - signal_line
+    return macd, signal_line, histogram
+
+
+# 5. VWAP
+def calculate_vwap(df):
+    # (High + Low + Close) / 3
+    typical_price = (df['high'] + df['low'] + df['close']) / 3
+    vwap = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
+    return vwap
 
 
 def normalize_candle(raw, source):
@@ -162,7 +180,7 @@ def fetch_stock_data(symbol, interval):
 
 
 # ==========================================
-# 4. 게임 데이터 생성 로직 (핵심)
+# 4. 게임 데이터 생성 로직
 # ==========================================
 
 def generate_game_data(candles, ticker, interval, asset_type):
@@ -171,13 +189,17 @@ def generate_game_data(candles, ticker, interval, asset_type):
     df = pd.DataFrame(candles)
     if len(df) < TOTAL_WINDOW: return []
 
-    # ⭐️ 지표 계산 (EMA, RSI, BB 추가)
+    # 지표 계산
     df['ema5'] = calculate_ema(df, 5)
     df['ema20'] = calculate_ema(df, 20)
     df['ema60'] = calculate_ema(df, 60)
-    df['ema120'] = calculate_ema(df, 120)  # ✅ EMA 120 추가
+    df['ema120'] = calculate_ema(df, 120)
     df['rsi'] = calculate_rsi(df, 14)
-    df['bb_upper'], df['bb_lower'] = calculate_bollinger_bands(df, 20, 2)  # ✅ 볼린저 밴드 추가
+    df['bb_upper'], df['bb_lower'] = calculate_bollinger_bands(df, 20, 2)
+
+    # MACD & VWAP 추가
+    df['macd'], df['macd_signal'], df['macd_hist'] = calculate_macd(df)
+    df['vwap'] = calculate_vwap(df)
 
     calc_df = df.iloc[-2000:].reset_index(drop=True)
     setting = VOLATILITY_SETTINGS.get(interval, VOLATILITY_SETTINGS['60m'])
@@ -205,7 +227,7 @@ def generate_game_data(candles, ticker, interval, asset_type):
 
         if abs_change < setting['min']: continue
 
-        # 난이도 판별 (EMA 5 > 20 > 60 정배열)
+        # 난이도 판별
         difficulty = "Normal"
         if abs_change >= setting['hard']:
             difficulty = "Hard"
@@ -228,16 +250,23 @@ def generate_game_data(candles, ticker, interval, asset_type):
                 smart_round(row['close']),  # 4
                 int(row['volume']),  # 5
 
-                # ⭐️ [지표 데이터]
+                # 지표 데이터
                 smart_round_indicator(row['ema5']) if pd.notnull(row['ema5']) else None,  # 6
                 smart_round_indicator(row['ema20']) if pd.notnull(row['ema20']) else None,  # 7
                 smart_round_indicator(row['ema60']) if pd.notnull(row['ema60']) else None,  # 8
-                smart_round_indicator(row['ema120']) if pd.notnull(row['ema120']) else None,  # 9 (New)
+                smart_round_indicator(row['ema120']) if pd.notnull(row['ema120']) else None,  # 9
 
                 round(row['rsi'], 2) if pd.notnull(row['rsi']) else None,  # 10
 
-                smart_round_indicator(row['bb_upper']) if pd.notnull(row['bb_upper']) else None,  # 11 (New)
-                smart_round_indicator(row['bb_lower']) if pd.notnull(row['bb_lower']) else None  # 12 (New)
+                smart_round_indicator(row['bb_upper']) if pd.notnull(row['bb_upper']) else None,  # 11
+                smart_round_indicator(row['bb_lower']) if pd.notnull(row['bb_lower']) else None,  # 12
+
+                # MACD & VWAP
+                smart_round_indicator(row['macd']) if pd.notnull(row['macd']) else None,  # 13
+                smart_round_indicator(row['macd_signal']) if pd.notnull(row['macd_signal']) else None,  # 14
+                smart_round_indicator(row['macd_hist']) if pd.notnull(row['macd_hist']) else None,  # 15
+
+                smart_round_indicator(row['vwap']) if pd.notnull(row['vwap']) else None  # 16
             ])
 
         game_round = {
